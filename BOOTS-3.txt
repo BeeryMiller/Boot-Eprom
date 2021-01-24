@@ -1,0 +1,508 @@
+*********************************************************
+*
+*      READ SECTOR ROUTINE
+*
+*               calling workspace contains
+*             on input                     on output
+*           R0  SECTOR NUMBER           ERROR CODE IF ANY
+*           R1  N0T USED                # OF BYTES READ CORRECTLY
+*           R2  DATA BUFFER IN CPU RAM
+*                                       ON RETURN EQ BIT SET IF ERROR
+*                                       ON RETURN EQ BIT RESET IF NO ER
+*
+*      REGISTER USAGE IMPORTANT (SECTOR I/O WORKSPACE)
+*           R0   SECTOR # TO BE READ
+*           R1   USED FOR TIMING
+*           R2   USED FOR TIMING
+*           R3   BUFFER POINTER
+*           R4   USED FOR SCRATCH, STATUS REG, ETC
+*           R5   FDC CONTROLLER TYPE
+*           R6   TRACK # ON FLOPPY DISKETTE
+*           R7   SECTOR # IN TRACK
+*           R8   MASK FOR DATA READY IN STATUS REGISTER
+*           R9   MASK FOR BUSY IN STATUS REGISTER
+*           R10  USED FOR TRACK # OF DRIVE
+*           R11  USED FOR SUBROUTINES
+*           R12  CRU BASE OF FLOPPY DISK CONTROLLER
+*
+*
+*           NOTES:
+*           ONLY one retry on a given sector
+*           ALL ERROR HANDLING MUST BE PERFORMED BY CALLER
+*
+********************************************************************************
+* NOW TEST IF BOOT FROM HORIZON RAM DISK OR FROM FLOPPY
+
+IOCM1  MOV  @HRDISK,R5
+       JEQ  BFFLOO            BRANCH IF BOOT FROM FLOPPY
+
+*------------------------------------------------------------
+* 0.98 EPROM HORIZON CODE; direct sector access via rack/cru
+*
+       MOV  @SAVR12,R12                  >C320,>F052        '. .R'         040C
+       SBO  >00                         >1D00              '..'           0410
+       MOV  *R13,R1                     >C05D              '.]'           0412
+       INC  R1                          >0581              '..'           0414
+       MOV  R1,R2                       >C081              '..'           0416
+       SRL  R2,3                        >0932              '.2'           0418
+       SLA  R2,3                        >0A32              '.2'           041A
+       S    R2,R1                       >6042              '`B'           041C
+       SLA  R1,8                        >0A81              '..'           041E
+       AI   R1,>5800                    >0221,>5800        '.!X.'         0420
+       SRL  R2,2                        >0922              '."'           0424
+       AI   R2,>0007                    >0222,>0007        '."..'         0426
+       CI   R2,>000D                    >0282,>000D        '....'         042A
+       JGT  AB                          >1503              '..'           042E
+       AI   R2,>00B2                    >0222,>00B2        '."..'         0430
+       JMP  AC                          >1007              '..'           0434
+AB     CI   R2,>00BF                    >0282,>00BF        '....'         0436
+       JLT  AD                          >1102              '..'           043A
+       INCT R2                          >05C2              '..'           043C
+       JMP  AC                          >1002              '..'           043E
+AD     AI   R2,>FFFA                    >0222,>FFFA        '."..'         0440
+AC     SWPB R2                          >06C2              '..'           0444
+       LDCR R2,8                        >3202              '2.'           0446
+       MOV  @>0004(R13),R3              >C0ED,>0004        '....'         0448
+       LI   R0,>0080                    >0200,>0080        '....'         044C
+AE     MOV  *R1+,*R3+                   >CCF1              '..'           0450
+       DEC  R0                          >0600              '..'           0452
+       JNE  AE                          >16FD              '..'           0454
+       SBZ  >00                         >1E00              '..'           0456
+*      B    @>082E                      >0460,>082E        '.`..'         0458
+       B    @FINUP
+
+*----------------end horizon code------
+
+*------start old horizon code
+*      uses VDP >1000 to load sector
+*
+*      LI   R0,HRDPAD         LOAD I/O OPCODE TO PAD
+*      LI   R1,>834C          WERE TO GO IN PAD
+*      MOV  *R0+,*R1+
+*      MOV  *R0+,*R1+
+*      MOV  *R13,*R1          GET SECTOR TO READ FROM
+* NOW THAT PAD IS SET, GO TO OPERATION
+*      LWPI GPLWS             GET INTO 4A WORKSPACE
+*      LI   R12,>1EF4         SET TO 99/4A MODE
+*      SBZ  0
+*      MOV  @SAVR9,R9         RESTORE SOME REGISTERS
+*      MOV  @SAVR12,R12
+*      SBO  0
+*
+* REMEMBER R13-R15 SET UP ALREADY IN POWERUP ROUTINE
+*
+*      CLR  @>8356            FOR PETER
+*      BL   *R9               GO TO IT
+*      JMP  DLOP5B            IF ERROR SHOULD NOT GO HERE
+*      SBZ  0                 TURN OFF CRU
+*      MOVB @>8350,R0         TEST IF ERROR ?
+*      JEQ  OKAY00            NONE
+**DLOP5B SBZ  0
+*      LI   R12,>1EF4
+*      SBO  0                 GO BACK TO NEW COMPUTER MODE
+*      LWPI UTILWS            RESTORE CALLING WORKSPACE
+*      JMP  DLOOP5            GO TO ERROR ROUTINE
+*
+**OKAY00 LI   R12,>1EF4         GET BACK TO OLD WS AND 9640 MODE
+*      SBO  0                 GO BACK TO 9640 MODE
+*      LWPI UTILWS
+*      MOV  @4(R13),R1
+*      LI   R0,>0010
+*      BL   @SETVA            LOAD LSB FIRST
+*      LI   R0,256            SECTOR IS 256 BYTES
+*      MOV  R0,@2(R13)        TELL CALLER THAT IT WAS 256 BYTES
+**IOCM10 MOVB @VDPRD,*R1+       GET IT BYTE BY BYTE
+*      DEC  R0
+*      JNE  IOCM10
+*      B    @FINUPH           RETURN GOOD I/O OPCODE
+*---old horizon code
+
+
+
+
+       PAGE
+* NOW PUT FLOPPY CONTROLLER TYPE IN R5
+* FIRST SET R12
+BFFLOO CLR  @RETRY            NO RETRIES SO FAR
+       MOV  @24(R13),R12      SET CRU BASE REGISTER
+BFFLOP MOV  @MAKER,R5
+* NOW MUST TURN MOTOR ON IF TI OR CORCOMP
+       CI   R5,2
+       JEQ  MOMY              BRANCH IF MYARC
+       SBZ  MOTBIT            ENABLE MOTOR ON FOR A LITTLE WHILE
+       SBO  MOTBIT
+       SBZ  TSDSEL            SELECT SIDE 0 OF HEAD
+       SBO  0                 ENABLE DSR FOR SURE
+       JMP  MOMY1
+
+MOMY   SBZ  MFDCSD            SELECT SIDE 0
+* NOW SET UP MASKS FOR DATA REQUEST AND BUSY
+MOMY1  SBO  MDS1              SELECT DRIVE 1
+       LI   R8,MASKDR
+       LI   R9,MASKBS
+* READ FROM SECTOR 0 ?
+       MOV  *R13,R0           GET SECTOR NUMBER TO READ
+       JNE  NZIO              BRANCH IF WRITING SECTOR 0
+RS0    BL   @SETPM0           SELECT DRIVE AND PERFORM RESTORE
+       JMP  LOADC1            CONTINUE
+
+NZIO   CLR  R6
+       MOV  R0,R7             SECTOR NUMBER IN R0 AND NOW R7
+       DIV  @SCPRTK,R6
+* NOW TRACK # IN R6, SECTOR # IN R7
+* NOW PERFORM SEEK IF NECESSARY
+* NOW PUT IN DESIRED TRACK IN DATA REGISTER, BUT FIRST MUST DETERMINE
+* WHICH SIDE OF DISKETTE
+* TEST IF THIS IS A 40 TRACK FLOPPY IN AN 80 TRACK DRIVE
+       MOV  R6,R10
+       MOV  @T4080,R4         GET THE NUMBER OF TRACKS ON THIS DISKDR
+       C    R4,@CWD40         IS THE DRIVE 40 TRACK
+       JEQ  REG40T            YES, ONLY 40 TRACK
+* TO BE HERE, AN 80 TRACK DRIVE SO TEST IF 80 TRACK FLOPPY
+       C    @FLPTRK,@CWD40    IS IT 80?
+       JH   REG40T            YES, SO PROCESS IT NORMALLY
+* TO BE HERE, WE HAVE A 40 TRACK FLOPPY IN AN 80 TRACK DRIVE
+* THEREFORE WE NEED TO DOUBLE THE NUMBER OF THE TRACK
+       SLA  R10,1             DOUBLE THE DESIRED TRACK
+REG40T C    R10,R4            TEST IF 39 OR LESS  OR 79 IF QUAD
+       JL   S039              BRANCH IF 0 TO 39
+********************************************************************************
+*
+*      SET DRIVE SIDE DEPENDING ON WHICH CONTROLLER TYPE
+*
+********************************************************************************
+SETSD1 CI   R5,2
+       JNE  SETSD2            BRANCH IF TI OR CORCOMP
+       SBO  MFDCSD            SET TO SIDE 1
+       JMP  SETSD3            NOW ADJUST TRACK REGISTER DESIRED
+
+SETSD2 SBO  TSDSEL            SET TO SIDE 1
+SETSD3 INV  R6
+       INV  R10
+       A    @T4080,R10
+       A    @T4080,R10
+       A    @FLPTRK,R6
+       A    @FLPTRK,R6
+* IS IT A FORTY TRACK FLOPPY IN AN 80 TRACK DRIVE?
+       CI   R4,40
+       JLE  S039              IS A 40 TRACK DRIVE
+       C    @FLPTRK,@CWD40    IS IT A 40 TRACK FLOPPY
+       JH   S039              IS 80 TRACK
+       DEC  R10
+S039   C    @CURTRK,R10       TEST IF THIS IS THE SAME TRACK
+       JEQ  IOHEAD            YES, SO DON'T SEEK IT
+* NOW SET CURRENT TRACK IN TRACK REG AND TRACK TO SEEK IN DATA REG
+
+       BL   @SEKTK            SEEK THAT TRACK
+LOADC1 BL   @WATTO            WAIT TO COMPLETE THE SEEK OR RESTORE
+
+IOHEAD
+* DENSITY IS ALREADY SET UP AND CAN NOT CHANGE BITS ARE SET....
+* SET IN CORRECT TRACK NUMBER IN CONTROLLER
+       MOV  R6,R4             MAKE 2 OF TRACK
+       SWPB R4
+       A    R6,R4
+       MOV  R5,R5             IS IT A TI?
+       JNE  NOTI11
+       INV  R4
+NOTI11 MOV  R4,@TFDCTR        LOAD CURRENT TRK IN FDC
+* NOW SET THE CORRECT SECTOR IN THE CONTROLLER
+* IT IS NOW IN R7
+       MOV  R7,R4             GET 2 BYTES OF SECTOR NUMBER
+       SWPB R4
+       A    R7,R4             NOW HAVE IT IN DOUBLE IN R4
+       MOV  R5,R5             IS IT A TI
+       JNE  NOTI12
+       INV  R4
+NOTI12 MOV  R4,@TFDCSC        PUT IT IN SECTOR REGISTER
+* NOW LOAD READ COMMAND
+       LI   R1,READCM         GET POINTER IN R1
+       A    R5,R1
+       MOV  *R1,@TFDCCR       LOAD READ COMMAND
+* NOW GET THE CALLERS POINTER
+       CLR  R4
+       MOV  @4(R13),R3
+* NOW FOR CORRECT TIMING WAIT UNTIL WE GET READY TO GO
+       LI   R2,3              LOAD COUNT CONSTANTS
+       CLR  R1
+       CI   R5,2              TEST CONTROLLER TYPE
+       JEQ  REDWA1            IS MYARC SO CONTINUE
+       LI   R4,8              DELAY AT LEAST 28 MICRO SEC
+W28M   DEC  R4
+       JNE  W28M
+       CI   R5,2
+       JH   CSECIO            CORCOM
+       JL   TSECIO            TI
+REDWA1 TB   MCDR         READY FOR DATA
+       JEQ  BYTRDY
+       TB   MCINT
+       JEQ  BADRED       BAD READ (COMMAND COMP. BUT NO
+       DEC  R1                      DATA REQUEST)
+       JNE  REDWA1
+       DEC  R2
+       JNE  REDWA1
+BADRED MOV  *R13,*R13    TIMED OUT OR BAD READ, SO WAS IT SECTOR 0?
+       JNE  BADRE1       NO
+* CAN'T READ THIS SECTOR SO TRY THE OPPOSITE DENSITY
+       LI   R3,>1D03          SET BIT ONE TO MYARC CONTROLLER
+       CI   R5,2              IS IT A TI? IS SO THEN CAN'T TRY DOUBLE DENSITY
+       JL   CRSC04            BRANCH IF TI
+* NOW TEST DENSITY, IF DOUBLE, THEN TRY SINGLE AND DON'T INCREMENT
+*   THE ERROR COUNTER
+       JEQ  CRSC02            BRANCH IF MYARC
+       AI   R3,7              CHANGE FOR CORCOMP
+CRSC02 MOV  @DENSIT,R1        <> 0 IF DOUBLE
+       JNE  CRSC03            IS DOUBLE, SO TRY SINGLE
+       AI   R3,>0100          CHANGE TO SET BIT ZERO
+CRSC03 X    R3
+       INV  @DENSIT
+       CI   R5,2
+       JEQ  CRSC04
+       MOV  @CFRCIT,@TFDCCR
+CRSC04 INC  @RETRY            ONE MORE BOMBED READ
+       C    @RETRY,@H0003 HOW MANY TIMES
+       JL   BFLOP1       TRY IT AGAIN
+BADRE2 B    @DLOOP5      RETURN WITH AN ERROR
+
+BADRE1 MOV  @RETRY,R4    TEST IF HERE BEFORE
+       JNE  BADRE2       NO GOOD
+       INC  @RETRY
+       BL   @SETPM0
+       BL   @WATTO
+BFLOP1 B    @BFFLOP      RETRY TO READ AGAIN
+
+GETNBY TB   MCDR         TEST FOR DATA READY
+       JNE  NOTDAT       NOT NOW
+BYTRDY MOVB @MFDCDR,*R3+
+       JMP  GETNBY
+
+NOTDAT TB   MCINT             IF NOT 0 THEN BUSY
+       JNE  GETNBY
+* TO BE HERE, NO LONGER BUSY SO RETURN
+* SET CALLING R1 WITH # OF BYTES READ
+* FIRST CHECK TO SEE IF ERROR [PERHAPS LOST BYTE]
+FINUP  MOV  R3,@2(R13)        0X082E
+       S    @4(R13),@2(R13)
+FINUPH SZCB @HEX20,R15     GOOD RETURN  0X838
+       RTWP
+       PAGE
+********************************************************************************
+*
+*      SECTOR READ ROUTINE FOR CORCOMP CONTROLLER
+*
+********************************************************************************
+CSECIO MOVB @TFDCSR,R4   READY FOR DATA
+       JLT  BADREC       DRIVE NOT READY
+       COC  R8,R4        DATA READY ?
+       JEQ  BYTRDC       YEP
+       COC  R9,R4        STILL BUSY
+       JEQ  CSECIO       BAD READ (COMMAND COMP. BUT NO
+BADREC JMP  BADRED       TIMED OUT SO BOMB
+
+GETNBC MOVB @TFDCSR,R4   TEST FOR DATA READY
+       JLT  BADREC
+       COC  R8,R4
+       JNE  NOTDAC       NOT NOW
+BYTRDC MOVB @TFDCRD,*R3+
+       JMP  GETNBC
+
+NOTDAC COC  R9,R4             IF NOT 0 THEN BUSY
+       JEQ  GETNBC
+* TO BE HERE, NO LONGER BUSY SO RETURN
+* SET CALLING R1 WITH # OF BYTES READ
+* FIRST CHECK TO SEE IF ERROR [PERHAPS LOST BYTE]
+       JMP  FINUP
+       PAGE
+********************************************************************************
+*
+*      NOW FOR TI CONTROLLER READ
+*
+********************************************************************************
+TSECIO MOVB @TFDCSR,R4   READY FOR DATA
+       INV  R4
+       JLT  BADRET       NOT READY ANY MORE
+       COC  R8,R4        DATA REQUEST?
+       JEQ  BYTRDT       YES
+       COC  R9,R4        DONE WITH COMMAND?
+       JEQ  TSECIO       BAD READ (COMMAND COMP. BUT NO
+BADRET JMP  BADRED       TIMED OUT SO BOMB
+
+GETNBT MOVB @TFDCSR,R4
+       INV  R4
+       JLT  BADRET
+       COC  R8,R4        TEST FOR DATA READY
+       JNE  NOTDTT       NOT NOW
+BYTRDT MOVB @TFDCRD,R4
+       INV  R4
+       MOVB R4,*R3+
+       JMP  GETNBT
+
+NOTDTT COC  R9,R4             IF 1 THEN BUSY
+       JEQ  GETNBT
+* TO BE HERE, NO LONGER BUSY SO RETURN
+* SET CALLING R1 WITH # OF BYTES READ
+* FIRST CHECK TO SEE IF ERROR [PERHAPS LOST BYTE]
+       JMP   FINUP
+       PAGE
+********************************************************************************
+*
+*      THIS ROUTINE PERFORMS A RESTORE TO TRACK 0 AND SETS R6,R7
+*           AND TRACK REGISTER
+*
+********************************************************************************
+SETPM0 CLR  R6                TRACK 0
+       CLR  R7                SECTOR 0
+       CLR  R10               PHYSICAL TRACK
+* NOW DETERMINE WHICH RESTORE COMMAND TO USE
+       LI   R1,RESTOR         POINT TO INSTRUCTION
+ISUCMD A    R5,R1
+       A    @STEP,R1
+       MOV  R10,@CURTRK       UPDATE CURRENT TRACK REG
+       MOV  *R1,@TFDCCR       LOAD RESTORE COMMAND
+WATTO2 RT
+       PAGE
+********************************************************************************
+*
+*      THIS ROUTINE PERFORMS A SEEK TO DESIRED TRACK USING R6 AND R7
+*           AND SETS CURRENT TRACK REGISTER IN CPU RAM
+*
+********************************************************************************
+SEKTK  MOV  R10,R4             MAKE A DUPLICATE OF R10
+       SWPB R4
+       A    R10,R4             NOW DESIRED SECTOR TWICE IN R4
+       MOV  R5,R5             IS IT A TI
+       JNE  SEKTK1            NO
+       INV  R4
+SEKTK1 MOV  R4,@TFDCWD
+       LI   R1,SEEKCM
+       MOV  @CURTRK,R4        NOW LOAD CURRENT TRACK
+       SWPB R4
+       A    @CURTRK,R4
+       MOV  R5,R5
+       JNE  SEKTK2
+       INV  R4
+SEKTK2 MOV  R4,@TFDCTR        SET CURRENT TRACK
+       JMP  ISUCMD            GO O ISSUE THE COMMAND
+       PAGE
+WATTO  LI   R2,6              TIME OPUT CONSTANT
+       CI   R5,2              IS IT A MYARC?
+       JNE  WATTO4            NO
+WATTO9 TB   MCINT             IS THE COMMAND COMPLETE?
+       JEQ  WATTO2            YES
+       DEC  R1                NO, WATI A WHILE LONGER
+       JNE  WATTO9
+       DEC  R2
+       JNE  WATTO9
+* TO BE HERE, TIMED OUT, SO PROBABLY NO FLOPPY IN THERE
+* FOR NOW JUST RETURN
+WATO6A SBZ  MFDCRS            TURN OFF CONTROLLER IF MYARC
+WATTO6 B    @DLOOP5           FINISH WITH ERROR NO WAY TO RECOVER HERE
+
+WATTO4 LI   R1,16             WAIT FOR AT LEAST 12 MICRO SEC FOR CHIP
+WATTO7 DEC  R1                WAIT UNIL DONE
+       JNE  WATTO7            DONE?
+WATTO8 MOVB @TFDCSR,R3        GET CORCOMP STATUS
+       MOV  R5,R5             IS IT A TI
+       JNE  WATTO5            BRANCH IF CORCOMP
+       INV  R3                INVERTED BUS
+WATTO5 MOVB R3,R3             GET STATUS
+       JLT  WATTO6            ERROR IF MOTOR NOT ON
+       COC  R9,R3             BUSY BIT
+       JNE  WATTO2            COMMAND COMPLETE
+       DEC  R1                NO, WATI A WHILE LONGER
+       JNE  WATTO8
+       DEC  R2
+       JNE  WATTO8
+       JMP  WATTO6
+       PAGE
+SETVA  MOVB R0,@VDPWA9
+       SWPB R0
+       MOVB R0,@VDPWA9
+       SRC  R0,8
+       RT
+       PAGE
+* NOW THIS ROUTINE WILL DISPLAY ON THE SCREEN THE ERROR MESSAGE POINTED
+*  TO BY R0      IF AN ERROR IS DETECTED, THE COMPUTER WILL
+*     PERFORM A COLD RESTART IF THE USER WANTS TO TRY TO REBOOT AGAIN
+*
+*   SELECT THE UPPER 64K OF RAM TO PUT MESSAGE IN
+*
+BADLOD LI   R2,>F120
+       MOVB @CBH89,*R2          NOW SOUND AN ERROR
+       MOVB @CBH3F,*R2
+       MOVB @CBH92,*R2
+       LI   R2,VRGTBL
+NEXREG MOV  *R2+,R1
+       JEQ  NEXRE1            ALL DONE SO TEST FOR KEYBOARD
+       BL   @SETVRG
+       JMP  NEXREG
+
+* NOW USE TEXT 1 MODE TO DISPLAY THE ERROR MESSAGE ON THE SCREEN
+* ASSUME THAT THE PATTERN NAME TABLE IS AT >0000
+* AND THAT THE PATTERN GENERATOR TABLE IS AT >0800
+* FIRST MOVE IN 24*40 LINES OF BLANK
+NEXRE1 LI   R1,>0040          SET ADDRESS OF WRITE
+       BL   @SETVRG
+       LI   R2,24*40          40*24 SCREEN
+       LI   R1,>2020          PUT IN BLANKS
+BLKLOP MOVB R1,@VDPWD
+       DEC  R2
+       JNE  BLKLOP
+* NOW PUT IN THE ERROR STATEMENT
+       LI   R1,>E041          PUT ON LINE 13
+       BL   @PUTMSG
+* NOW LOAD IN PRESS ANY KEY TO RETRY
+       LI   R0,PRSRTY
+       LI   R1,>3042
+       BL   @PUTMSG
+* NOW LOAD IN CHARACTER SET
+       LI   R1,>0048
+       BL   @SETVRG
+       CLR  R1
+*      LI   R2,>29*8          BLANK FOR 0 TO >40
+       LI   R2,>0208     0.98 EPROM  9-18.2014
+BPTLOP MOVB R1,@VDPWD
+       DEC  R2
+       JNE  BPTLOP
+       LI   R1,CHRTBL
+       LI   R2,ENDCTB-CHRTBL
+CTBLOP MOVB *R1+,@VDPWD
+       DEC  R2
+       JNE  CTBLOP
+       CLR  R2
+CTBLO1 DEC  R2
+       JNE  CTBLO1
+       BL   @SNDOFF           NOW TURN OFF SOUND
+* NOW JUST TEST FOR A RETRY FROM THE KEYBOARD
+WAITKY CLR  R12
+       TB   INTKB
+       JEQ  WAITKY
+       SBZ  CLRKB             CLEAR KEYBOARD INPUT
+       SBO  CLRKB
+       B    @ENTRY            TRY TO REBOOT
+
+SETVRG MOVB R1,@VDPWA9
+       SRC  R1,8
+       MOVB R1,@VDPWA9
+       SRC  R1,8
+       RT
+
+PUTMSG MOV  R11,R10
+       BL   @SETVRG
+       MOVB *R0+,R2           GET LENGTH OF ERROR MESSAGE
+       SRL  R2,8
+EMSLOP MOVB *R0+,@VDPWD
+       DEC  R2
+       JNE  EMSLOP
+       B    *R10
+*                                       /-blue vs. red
+* VRGTBL DATA >0080,>5081,>4082,>2184,>F487,>0888,>0089,>048E
+VRGTBL DATA >0080,>5081,>4082,>2184,>F787,>0888,>0089,>048E   0.98 epromm
+
+*  FIX TO match 98 EPROM boundary
+       DATA >0000
+       DATA >FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF
+       DATA >FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF,>FFFF
+* end
+       DATA >DEAD,>BEEF,>9640          our flag for EOF for now 9.19
+
