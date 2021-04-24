@@ -1,0 +1,11 @@
+       COPY "BOOTS-1"
+       COPY "BOOTS-2"
+       COPY "BOOTS-3"
+       TEXT 'EPROM Updates by Beery Miller'
+       EVEN
+       AORG >1AEC
+       COPY "SWANSET"
+       AORG >2000
+       COPY "SWAN1"
+       COPY "SWAN2"
+       END
